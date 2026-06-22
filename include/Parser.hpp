@@ -15,14 +15,22 @@ namespace TOML
       std::string_view Sv_SourceView_ {};
       std::string_view Sv_FileName_ {};
       std::vector<Token::TokenData> Toks_ {};
+      std::vector<std::size_t> HashLineBeforeTok_;
 
       ASTArena Arena_ {};
 
-      NodeIdx RootTableIdx { NodeIdx::None };
-      NodeIdx LastTableIdx { NodeIdx::None };
-
+      std::size_t PendingHashLine_ {0};
       std::size_t Cursor_ {0};
 
+      NodeIdx RootTableIdx { NodeIdx::None };
+      NodeIdx LastTableIdx { NodeIdx::None };
+      NodeIdx LastTableChildIndx_ { NodeIdx::None };
+      NodeIdx TableTailIdx { NodeIdx:: None };
+      NodeIdx GlobalTailIdx { NodeIdx:: None };
+
+
+
+      [[maybe_unused]]std::byte _pad[4]{};
       [[nodiscard]] auto Peek() const noexcept -> Token::TokenType;
       auto Consume() noexcept -> const Token::TokenData&;
       [[nodiscard]] auto StartOfStatement() const noexcept -> bool;

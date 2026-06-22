@@ -8,19 +8,17 @@ namespace Transpiler
 {
   class [[
     /* nullAttr */
-  ]] Transpile
-  {
+  ]] Transpile {
     private:
       FileHandler::FileWriter& Writer_;
+      std::string Buffer_;
 
       auto Traverse
       (
         const TOML::ASTArena& Arena,
         TOML::NodeIdx CurrentIdx,
-        std::string CurrentPrefix
+        std::string& CurrentPrefix
       ) noexcept -> void;
-      [[nodiscard]] auto FormatIdentifier(std::string_view Name)
-      const -> std::string;
 
     public:
       explicit Transpile(FileHandler::FileWriter& Writer) noexcept;

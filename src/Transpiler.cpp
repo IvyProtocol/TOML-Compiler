@@ -1,543 +1,570 @@
-#include "Transpiler.hpp"
 #include "AST.hpp"
+#include "Transpiler.hpp"
+#include <array>
+#include <charconv>
 #include <variant>
 
-namespace Transpiler
+namespace Transpiler {
+
+Transpile::Transpile(FileHandler::FileWriter &Writer) noexcept
+    : Writer_(Writer) {}
+
+
+auto Transpile::Generate
+(
+  const TOML::ASTArena &Arena,
+  TOML::NodeIdx RootIdx
+) noexcept -> void
+
 {
-  Transpile::Transpile(FileHandler::FileWriter& Writer) noexcept
-      : Writer_(Writer) {}
+  this->Buffer_.clear();
+  this->Buffer_.reserve(8192);
 
-  auto Transpile::FormatIdentifier(std::string_view Name)
-  const -> std::string
-  {
+  std::string Prefix;
+  Prefix.reserve(128);
 
-    std::string Formatted(Name);
-    for
-    (
-      char& C : Formatted
-    ) if
-      (
-        C == '.' ||
-        C == '-'
-      ) C = '_';
+  this->Traverse(Arena, RootIdx, Prefix);
+  this->Writer_.Write(this->Buffer_);
+}
 
-    return Formatted;
-  }
 
-  auto Transpile::Generate
+auto Transpile::Traverse
+(
+  const TOML::ASTArena &Arena,
+  TOML::NodeIdx CurrentIdx,
+  std::string &CurrentPrefix
+) noexcept -> void
+{
+
+  while
   (
-    const TOML::ASTArena& Arena,
-    TOML::NodeIdx RootIdx
-  ) noexcept -> void
-  {
-    this->Traverse(Arena, RootIdx, "");
-  }
+    CurrentIdx != TOML::NodeIdx::None
+  ) {
 
-  auto Transpile::Traverse
-  (
-    const TOML::ASTArena& Arena,
-    TOML::NodeIdx CurrentIdx,
-    std::string CurrentPrefix
-  ) noexcept -> void
-  {
-    while
+    const auto &Node = Arena.GetNode(CurrentIdx);
+
+    // TableNode
+    if
     (
-      CurrentIdx != TOML::NodeIdx::None
+      const auto *Table = std::get_if<TOML::TableNode>(&Node.Payload)
     ) {
 
-      const auto& Node = Arena.GetNode(CurrentIdx);
+      const size_t OldLen = CurrentPrefix.size();
 
-      std::visit
+      if
       (
-        [&](auto&& Payload)
-        {
-          using T = std::decay_t<decltype(Payload)>;
+        !Table->name.empty()
+      ) {
 
-          if constexpr
+        for
+        (
+          const char C : Table->name
+        ) {
+
+          const char Mapped = (
+            C == '.' || C == '-'
+          ) ? '_' : C;
+
+          CurrentPrefix.push_back(
+            static_cast<char>(
+              std::toupper(static_cast<unsigned char>(Mapped)))
+          );
+
+        }
+
+        CurrentPrefix.push_back('_');
+
+      }
+
+      this->Traverse(Arena, Table->FirstChildIndx, CurrentPrefix);
+      CurrentPrefix.resize(OldLen);
+
+    }
+
+    // ── KeyValueNode ──────────────────────────────────────
+    else if
+    (
+      const auto *KV = std::get_if<TOML::KeyValueNode>(&Node.Payload)
+    ) {
+
+      const auto *NextNode = (Node.NextSiblingIndx != TOML::NodeIdx::None)
+                                 ? &Arena.GetNode(Node.NextSiblingIndx)
+                                 : nullptr;
+
+      const auto *NextArray =
+          NextNode ? std::get_if<TOML::ArrayNode>(&NextNode->Payload) : nullptr;
+
+      const auto *NextInline =
+          (NextNode && !NextArray)
+              ? std::get_if<TOML::InlineTableNode>(&NextNode->Payload)
+              : nullptr;
+
+      if
+      (
+        NextArray
+      ) {
+
+        if
+        (
+          !KV->Key.empty()
+        ) {
+
+          const size_t MarkStart = this->Buffer_.size();
+          this->Buffer_.append(CurrentPrefix);
+
+          for
           (
-            std::is_same_v<T,
-            TOML::TableNode>
-          ) {
+            const char C : KV->Key
+          ) this->Buffer_.push_back(
+            static_cast<char>(std::toupper(static_cast<unsigned char>(C)))
+          );
 
-            std::string NewPrefix = Payload.name.empty() ?
-            "" : this->FormatIdentifier(Payload.name) + "_";
-
-            for
-            (
-              char& c : NewPrefix
-            ) c = static_cast<char>(
-              std::toupper(static_cast<unsigned char>(c))
-            );
-
-            NewPrefix = CurrentPrefix + NewPrefix;
-            this->Traverse(Arena, Payload.FirstChildIndx, NewPrefix);
-
-          }
-
-          else if constexpr
+          const std::string ArrDecl
           (
-            std::is_same_v<T,
-            TOML::KeyValueNode>
-          ) {
+            this->Buffer_,
+            MarkStart,
+            this->Buffer_.size() - MarkStart
+          );
 
-            bool IsArray = false;
-            bool IsInlineTable = false;
+          this->Buffer_.resize(MarkStart); // trim — content is in ArrDecl
 
-            if
+          // Pre-scan: does this array contain inline-table elements?
+          bool ContainsComplex = false;
+
+          {
+            auto ScanIdx = NextArray->FirstChildIndx;
+
+            while
             (
-              Node.NextSiblingIndx != TOML::NodeIdx::None
+              ScanIdx != TOML::NodeIdx::None
             ) {
 
-              const auto& NextNode = Arena.GetNode(Node.NextSiblingIndx);
+              const auto &SN = Arena.GetNode(ScanIdx);
+              if
+              (
+                SN.NextSiblingIndx != TOML::NodeIdx::None &&
+                std::holds_alternative<TOML::InlineTableNode>(
+                  Arena.GetNode(SN.NextSiblingIndx).Payload
+                )
+              ) {
+
+                ContainsComplex = true;
+                break;
+
+              }
+
+              ScanIdx = SN.NextSiblingIndx;
+
+            }
+          }
+
+          if
+          (
+            ContainsComplex
+          ) this->Buffer_.append("declare -A ").append(ArrDecl).append("\n");
+          else [[
+            /* nullAttr */
+          ]] this->Buffer_.append("export ").append(ArrDecl).append("=( ");
+
+          int IndexCounter = 0;
+
+          auto ProcessElements = [&]
+          (
+            auto &ElemSelf,
+            TOML::NodeIdx ElemIdx
+          ) -> void
+          {
+
+            while
+            (
+              ElemIdx != TOML::NodeIdx::None
+            ) {
+
+              const auto &EN = Arena.GetNode(ElemIdx);
+              const auto *EP = std::get_if<TOML::KeyValueNode>(&EN.Payload);
+
+              const auto *ElemNextNode =
+                  (EN.NextSiblingIndx != TOML::NodeIdx::None)
+                      ? &Arena.GetNode(EN.NextSiblingIndx)
+                      : nullptr;
+
+              const auto *ElemArr =
+                  ElemNextNode
+                      ? std::get_if<TOML::ArrayNode>(&ElemNextNode->Payload)
+                      : nullptr;
+
+              const auto *ElemInl = (ElemNextNode && !ElemArr)
+                                        ? std::get_if<TOML::InlineTableNode>(
+                                              &ElemNextNode->Payload)
+                                        : nullptr;
 
               if
               (
-                std::holds_alternative<TOML::ArrayNode>(NextNode.Payload)
-              ) IsArray = true;
+                ElemArr
+              ) {
+
+                ElemSelf(ElemSelf, ElemArr->FirstChildIndx);
+                ElemIdx = EN.NextSiblingIndx; // skip to ArrayNode
+
+              }
 
               else if
               (
-                std::holds_alternative<TOML::InlineTableNode>(NextNode.Payload)
-              ) IsInlineTable = true;
-
-            }
-
-          std::size_t RequiredLength = 7 + CurrentPrefix.length() + Payload.Key.length() + 1 + Payload.Value.length() + 1;
-            if
-            (
-              IsArray
-            ) {
-
-              if
-              (
-                !Payload.Key.empty()
+                ElemInl
               ) {
+                // Inline-table element: emit associative-array
+                // assignments keyed by "<index>_<prop>".
 
-                std::string ArrDecl;
-
-                ArrDecl.reserve(CurrentPrefix.length() + Payload.Key.length());
-
-                ArrDecl.append(CurrentPrefix);
-
-                for
+                auto ProcessInline = [&]
                 (
-                  char c : Payload.Key
-                ) ArrDecl.push_back(static_cast<char>(
-                  std::toupper(static_cast<unsigned char>(c)))
-                );
+                  auto &InlSelf,
+                  TOML::NodeIdx PropIdx,
+                  const std::string &KeyPfx
+                ) -> void
+                {
 
-                const auto& NextNode = Arena.GetNode(Node.NextSiblingIndx);
-                const auto& Array = std::get<TOML::ArrayNode>(NextNode.Payload);
-
-                /*
-                  Pre-Scan: Does this array contain complex objects like Inline Tables?
-                */
-
-                bool ContainsComplex = false;
-                auto ScanIdx = Array.FirstChildIndx;
-
-                while
-                (
-                  ScanIdx != TOML::NodeIdx::None
-                ) {
-
-                  const auto& ScanNode = Arena.GetNode(ScanIdx);
-
-                  if
+                  while
                   (
-                    ScanNode.NextSiblingIndx != TOML::NodeIdx::None
+                    PropIdx != TOML::NodeIdx::None
                   ) {
 
-                    const auto& NextScan = Arena.GetNode(ScanNode.NextSiblingIndx);
+                    const auto &PN = Arena.GetNode(PropIdx);
+                    const auto *PP =
+                        std::get_if<TOML::KeyValueNode>(&PN.Payload);
+
+                    const auto *PNextNode =
+                        (PN.NextSiblingIndx != TOML::NodeIdx::None)
+                            ? &Arena.GetNode(PN.NextSiblingIndx)
+                            : nullptr;
+
+                    const auto *PropArr =
+                        PNextNode
+                            ? std::get_if<TOML::ArrayNode>(&PNextNode->Payload)
+                            : nullptr;
+
+                    const auto *PropInl =
+                        (PNextNode && !PropArr)
+                            ? std::get_if<TOML::InlineTableNode>(
+                                  &PNextNode->Payload)
+                            : nullptr;
 
                     if
                     (
-                      std::holds_alternative<TOML::InlineTableNode>(NextScan.Payload)
+                      PropArr
                     ) {
-                      ContainsComplex = true;
-                      break;
+
+                      this->Buffer_.append(ArrDecl)
+                          .append("[\"")
+                          .append(KeyPfx)
+                          .append(PP->Key)
+                          .append("\"]=( ");
+
+                      for
+                      (
+                        auto EIdx = PropArr->FirstChildIndx;
+                        EIdx != TOML::NodeIdx::None;
+                        EIdx = Arena.GetNode(EIdx).NextSiblingIndx
+                      ) {
+
+                        const auto *EProp = std::get_if<TOML::KeyValueNode>(
+                            &Arena.GetNode(EIdx).Payload
+                        );
+
+                        this->Buffer_.append(EProp->Value).push_back(' ');
+
+                      }
+
+                      this->Buffer_.append(")\n");
+                      PropIdx = PN.NextSiblingIndx;
 
                     }
-                  }
 
-                  ScanIdx = ScanNode.NextSiblingIndx;
-                }
+                    else if
+                    (
+                      PropInl
+                    ) {
+
+                      // Nested inline table: recurse with extended key.
+
+                      std::string NestedPfx;
+                      NestedPfx.reserve(KeyPfx.size() + PP->Key.size() + 1);
+                      NestedPfx.append(KeyPfx).append(PP->Key).push_back('_');
+                      InlSelf(InlSelf, PropInl->FirstChildIndx, NestedPfx);
+                      PropIdx = PN.NextSiblingIndx;
+
+                    }
+
+                    else [[
+                      /* nullAttr */
+                    ]] {
+
+                      this->Buffer_.append(ArrDecl)
+                          .append("[\"")
+                          .append(KeyPfx)
+                          .append(PP->Key)
+                          .append("\"]=")
+                          .append(PP->Value)
+                          .append("\n");
+                    }
+
+                    PropIdx = Arena.GetNode(PropIdx).NextSiblingIndx;
+
+                  }
+                };
+
+                std::array<char, 20> NumBuf{};
+                const char *const NumEnd =
+                    std::to_chars
+                    (
+                      NumBuf.data(),
+                      NumBuf.end(),
+                      IndexCounter
+                    ).ptr;
+
+                std::string BasePrefix(static_cast<const char*>(NumBuf.data()), NumEnd);
+                BasePrefix.push_back('_');
+
+                ProcessInline(ProcessInline, ElemInl->FirstChildIndx,
+                              BasePrefix);
+                ElemIdx = EN.NextSiblingIndx; // skip to InlineTableNode
+                IndexCounter++;
+
+              }
+
+              else [[
+                /* nullAttr */
+              ]] {
 
                 if
                 (
                   ContainsComplex
-                ) this->Writer_.Write("declare -A " + ArrDecl + "\n");
+                ) {
+
+                  // Emit: ARRNAME["<index>"]=value
+
+                  std::array<char, 20> NB{};
+                  const char *const NE =
+                      std::to_chars
+                      (
+                        NB.data(),
+                        NB.end(),
+                        IndexCounter
+                      ).ptr;
+
+                  this->Buffer_.append(ArrDecl)
+                      .append("[\"")
+                      .append(static_cast<const char*>(NB.data()), NE)
+                      .append("\"]=")
+                      .append(EP->Value)
+                      .append("\n");
+                  IndexCounter++;
+
+                }
 
                 else [[
                   /* nullAttr */
-                ]] this->Writer_.Write("export " + ArrDecl + "=( ");
-
-
-                auto ProcessArrayElements = [&](
-                  auto& Self,
-                  TOML::NodeIdx CurrentElemIdx,
-                  int& IndexCounter
-                ) -> void
-                {
-                  while
-                  (
-                    CurrentElemIdx != TOML::NodeIdx::None
-                  ) {
-
-                    const auto& ElemNode = Arena.GetNode(CurrentElemIdx);
-                    const auto& ElemPayload = std::get<TOML::KeyValueNode>(ElemNode.Payload);
-
-                    bool ElemIsArray = false;
-                    bool ElemIsInlineTable = false;
-
-                    if
-                    (
-                      ElemNode.NextSiblingIndx != TOML::NodeIdx::None
-                    ) {
-
-                      const auto& NextElemNode = Arena.GetNode(ElemNode.NextSiblingIndx);
-
-                      if
-                      (
-                        std::holds_alternative<TOML::ArrayNode>(NextElemNode.Payload)
-                      ) ElemIsArray = true;
-
-                      else if
-                      (
-                        std::holds_alternative<TOML::InlineTableNode>(NextElemNode.Payload)
-                      ) ElemIsInlineTable = true;
-                    }
-
-                    if
-                    (
-                      ElemIsArray
-                    ) {
-
-                      const auto& NextElemNode = Arena.GetNode(ElemNode.NextSiblingIndx);
-                      const auto& NestedArray = std::get<TOML::ArrayNode>(NextElemNode.Payload);
-
-                      Self(Self, NestedArray.FirstChildIndx, IndexCounter);
-
-                      CurrentElemIdx = ElemNode.NextSiblingIndx;
-
-                    }
-
-                    else if
-                    (
-                      ElemIsInlineTable
-                    ) {
-
-                      const auto& NextElemNode = Arena.GetNode(ElemNode.NextSiblingIndx);
-                      const auto& NestedTable = std::get<TOML::InlineTableNode>(NextElemNode.Payload);
-
-                      // Mini Lambda to extract the properties of the inline table.
-                      auto ProcessInlineInArray = [&](
-                        [[maybe_unused]] auto& InnerSelf,
-                        TOML::NodeIdx PropIndx,
-                        std::string KeyPrefix
-                      ) -> void {
-
-                        while
-                        (
-                          PropIndx != TOML::NodeIdx::None
-                        ) {
-
-                          const auto& PropNode = Arena.GetNode(PropIndx);
-                          const auto& PropPayload = std::get<TOML::KeyValueNode>(PropNode.Payload);
-
-                          bool PropIsArr = false;
-                          bool PropIsTabl = false;
-
-                          if
-                          (
-                            PropNode.NextSiblingIndx != TOML::NodeIdx::None
-                          ) {
-
-                            const auto& Next = Arena.GetNode(PropNode.NextSiblingIndx);
-
-                            if
-                            (
-                              std::holds_alternative<TOML::ArrayNode>(Next.Payload)
-                            ) PropIsArr = true;
-
-                            else if
-                            (
-                              std::holds_alternative<TOML::InlineTableNode>(Next.Payload)
-                            ) PropIsTabl = true;
-
-                          }
-
-                          std::string FullKey = KeyPrefix + PropPayload.Key;
-
-                          if
-                          (
-                            PropIsArr
-                          ) {
-
-                            const auto& NextPropNode = Arena.GetNode(PropNode.NextSiblingIndx);
-                            const auto& NestedArray = std::get<TOML::ArrayNode>(NextPropNode.Payload);
-
-                            auto ElemIdx = NestedArray.FirstChildIndx;
-                            std::string ElemStr = "(";
-
-                            while
-                            (
-                              ElemIdx != TOML::NodeIdx::None
-                            ) {
-
-                              const auto& EleNode = Arena.GetNode(ElemIdx);
-                              const auto& ElePayload = std::get<TOML::KeyValueNode>(EleNode.Payload);
-
-                              ElemStr.append(ElePayload.Value).append(" ");
-                              ElemIdx = EleNode.NextSiblingIndx;
-                            }
-                            ElemStr.append(")");
-
-                            std::string Assign = ArrDecl + "[\"" + FullKey + "\"]=" + ElemStr + "\n";
-                            this->Writer_.Write(Assign);
-
-                            PropIndx = PropNode.NextSiblingIndx;
-                          }
-
-                          else if
-                          (
-                            PropIsTabl
-                          ) {
-
-                            const auto& NextPropNode = Arena.GetNode(PropNode.NextSiblingIndx);
-                            const auto& NestTable = std::get<TOML::InlineTableNode>(NextPropNode.Payload);
-
-                            InnerSelf(InnerSelf, NestTable.FirstChildIndx, FullKey + "_");
-                            PropIndx = PropNode.NextSiblingIndx;
-                          }
-
-                          else [[
-                            /* nullAttr */
-                          ]] {
-
-                            std::string Assign = ArrDecl + "[\"" + FullKey + "\"]=" + PropPayload.Value + "\n";
-                            this->Writer_.Write(Assign);
-                          }
-
-                          PropIndx = Arena.GetNode(PropIndx).NextSiblingIndx;
-                        }
-                      };
-
-                      std::string BasePrefix = std::to_string(IndexCounter) + "_";
-
-                      ProcessInlineInArray(
-                        ProcessInlineInArray,
-                        NestedTable.FirstChildIndx,
-                        BasePrefix
-                      );
-
-                      CurrentElemIdx = ElemNode.NextSiblingIndx;
-                      IndexCounter++;
-                    }
-
-                    else [[
-                      /* nullAttr */
-                    ]] {
-
-                      if
-                      (
-                        ContainsComplex
-                      ) {
-
-                        std::string Assign = ArrDecl + "[\"" + std::to_string(IndexCounter) + "\"]=" + ElemPayload.Value + "\n";
-
-                        this->Writer_.Write(Assign);
-                        IndexCounter++;
-                      }
-
-                      else [[
-                        /* nullAttr */
-                      ]] {
-
-                        std::string ElemStr;
-                        ElemStr.reserve(ElemPayload.Value.length() + 1);
-
-                        ElemStr.append(ElemPayload.Value).append(" ");
-                        this->Writer_.Write(ElemStr);
-                      }
-                    }
-
-                    CurrentElemIdx = Arena.GetNode(CurrentElemIdx).NextSiblingIndx;
-                  }
-                };
-
-                int StartIndex = 0;
-                ProcessArrayElements(ProcessArrayElements, Array.FirstChildIndx, StartIndex);
-
-                if
-                (
-                  !ContainsComplex
-                ) this->Writer_.Write(")\n");
+                ]] this->Buffer_.append(EP->Value).push_back(' ');
 
               }
-              CurrentIdx = Node.NextSiblingIndx;
+
+              ElemIdx = Arena.GetNode(ElemIdx).NextSiblingIndx;
 
             }
+          };
 
-            else if
+          ProcessElements
+          (
+            ProcessElements,
+            NextArray->FirstChildIndx
+          );
+
+          if
+          (
+            !ContainsComplex
+          ) this->Buffer_.append(")\n");
+
+        }
+
+        CurrentIdx = Node.NextSiblingIndx; // point to ArrayNode so
+        // the bottom-of-loop advance lands on the next KV sibling.
+
+      }
+
+      // ── Inline-table value ────────────────────────────
+      else if
+      (
+        NextInline
+      ) {
+
+        if
+        (
+          !KV->Key.empty()
+        ) {
+
+          // Build MapName into Buffer_, snapshot, trim.
+
+          const size_t MarkStart = this->Buffer_.size();
+          this->Buffer_.append(CurrentPrefix);
+
+          for
+          (
+            const char C : KV->Key
+          ) this->Buffer_.push_back(
+            static_cast<char>(std::toupper(static_cast<unsigned char>(C)))
+          );
+
+          const std::string MapName
+          (
+            this->Buffer_,
+            MarkStart,
+            this->Buffer_.size() - MarkStart
+          );
+
+          this->Buffer_.resize(MarkStart);
+
+          this->Buffer_.append("declare -A ")
+                       .append(MapName)
+                       .append("\n");
+
+          auto ProcessProps = [&]
+          (
+            auto &PropSelf,
+            TOML::NodeIdx PropIdx,
+            const std::string &KeyPfx
+          ) -> void
+          {
+
+            while
             (
-              IsInlineTable
+              PropIdx != TOML::NodeIdx::None
             ) {
 
+              const auto &PN = Arena.GetNode(PropIdx);
+              const auto *PP = std::get_if<TOML::KeyValueNode>(&PN.Payload);
+
+              const auto *PNextNode =
+                  (PN.NextSiblingIndx != TOML::NodeIdx::None)
+                      ? &Arena.GetNode(PN.NextSiblingIndx)
+                      : nullptr;
+
+              const auto *PropArr =
+                  PNextNode ? std::get_if<TOML::ArrayNode>(&PNextNode->Payload)
+                            : nullptr;
+
+              const auto *PropInl =
+                  (PNextNode && !PropArr)
+                      ? std::get_if<TOML::InlineTableNode>(&PNextNode->Payload)
+                      : nullptr;
+
               if
               (
-                !Payload.Key.empty()
+                PropArr
               ) {
-                std::string MapName = CurrentPrefix;
 
+                  this->Buffer_.append(MapName)
+                    .append("[\"")
+                    .append(KeyPfx)
+                    .append(PP->Key)
+                    .append("\"]=( ");
 
-                for
-                (
-                  char C : Payload.Key
-                ) MapName.push_back(static_cast<char>(
-                  std::toupper(static_cast<unsigned char>(C)))
-                );
-
-
-                this->Writer_.Write("declare -A " + MapName + "\n");
-
-
-                const auto& NextNode = Arena.GetNode(Node.NextSiblingIndx);
-                const auto& InlineTable = std::get<TOML::InlineTableNode>(NextNode.Payload);
-
-                auto ProcessProperties = [&](
-                  auto& Self,
-                  TOML::NodeIdx CurrentPropIndx,
-                  std::string KeyPrefix
-                ) -> void
-                {
-                  while
+                  for
                   (
-                    CurrentPropIndx != TOML::NodeIdx::None
+                    auto EIdx = PropArr->FirstChildIndx;
+                    EIdx != TOML::NodeIdx::None;
+                    EIdx = Arena.GetNode(EIdx).NextSiblingIndx
                   ) {
 
-                    const auto& PropNode = Arena.GetNode(CurrentPropIndx);
-                    const auto& PropPayload = std::get<TOML::KeyValueNode>(PropNode.Payload);
+                  const auto *EProp = std::get_if<TOML::KeyValueNode>(
+                    &Arena.GetNode(EIdx).Payload
+                  );
 
-                    bool PropIsArray = false;
-                    bool PropIsInlineTable = false;
+                  this->Buffer_.append(EProp->Value).push_back(' ');
 
-                    if
-                    (
-                      PropNode.NextSiblingIndx != TOML::NodeIdx::None
-                    ) {
-                      const auto& NextPropNode = Arena.GetNode(PropNode.NextSiblingIndx);
+                }
 
-                      if
-                      (
-                        std::holds_alternative<TOML::ArrayNode>(NextPropNode.Payload)
-                      ) PropIsArray = true;
-
-                      else if
-                      (
-                        std::holds_alternative<TOML::InlineTableNode>(NextPropNode.Payload)
-                      ) PropIsInlineTable = true;
-                    }
-
-                   std::string FullKey = KeyPrefix + PropPayload.Key;
-                    if
-                    (
-                      PropIsArray
-                    ) {
-                      const auto& NextPropNode = Arena.GetNode(PropNode.NextSiblingIndx);
-                      const auto& Array = std::get<TOML::ArrayNode>(NextPropNode.Payload);
-
-                      auto ElemIdx = Array.FirstChildIndx;
-
-                      std::string ElemStr = "( ";
-                      while
-                      (
-                        ElemIdx != TOML::NodeIdx::None
-                      ) {
-                        const auto& ElemNode = Arena.GetNode(ElemIdx);
-                        const auto& ElemPayload = std::get<TOML::KeyValueNode>( ElemNode.Payload);
-
-                        ElemStr.append(ElemPayload.Value).append(" ");
-                        ElemIdx = ElemNode.NextSiblingIndx;
-                      }
-
-                      ElemStr.append(")");
-
-                      std::string Assign = MapName + "[\"" + FullKey + "\"]=" + ElemStr + "\n";
-                      this->Writer_.Write(Assign);
-
-                      CurrentPropIndx = PropNode.NextSiblingIndx;
-                    }
-
-                    else if
-                    (
-                      PropIsInlineTable
-                    ) {
-                      const auto& NextPropNode = Arena.GetNode(PropNode.NextSiblingIndx);
-                      const auto& Nestedtable = std::get<TOML::InlineTableNode>(NextPropNode.Payload);
-
-                    Self(Self, Nestedtable.FirstChildIndx, FullKey + "_");
-
-                    CurrentPropIndx = PropNode.NextSiblingIndx;
-                    }
-
-                    else [[
-                      /* nullAttr */
-                    ]] {
-
-                      std::string Assign;
-                      Assign.reserve(
-                      MapName.length() + FullKey.length() + PropPayload.Value.length() + 6
-                      );
-                      Assign.append(MapName).append("[\"").append(FullKey).append("\"]=").append(PropPayload.Value).append("\n");
-
-                      this->Writer_.Write(Assign);
-                    }
-
-                    CurrentPropIndx = Arena.GetNode(CurrentPropIndx).NextSiblingIndx;
-                  }
-
-                };
-
-                ProcessProperties(ProcessProperties, InlineTable.FirstChildIndx, "");
+                this->Buffer_.append(")\n");
+                PropIdx = PN.NextSiblingIndx;
 
               }
-              CurrentIdx = Node.NextSiblingIndx;
 
-            }
-
-            else [[
-              /* nullAttr */
-            ]] {
-
-              if
+              else if
               (
-                !Payload.Key.empty()
+                PropInl
               ) {
-                std::string Line;
-                Line.reserve(RequiredLength);
 
-                Line.append("export ").append(CurrentPrefix);
+                std::string NestedPfx;
 
-                for
-                (
-                  char c : Payload.Key
-                ) Line.push_back(static_cast<char>(
-                  std::toupper(static_cast<unsigned char>(c)))
-                );
+                NestedPfx.reserve(KeyPfx.size() + PP->Key.size() + 1);
 
-                Line.append("=").append(Payload.Value).append("\n");
-                this->Writer_.Write(Line);
+                NestedPfx.append(KeyPfx)
+                         .append(PP->Key)
+                         .push_back('_');
+                PropSelf(PropSelf, PropInl->FirstChildIndx, NestedPfx);
+                PropIdx = PN.NextSiblingIndx;
 
               }
 
+              else [[
+                /* nullAttr */
+              ]] {
+
+                this->Buffer_.append(MapName)
+                             .append("[\"")
+                             .append(KeyPfx)
+                             .append(PP->Key)
+                             .append("\"]=")
+                             .append(PP->Value)
+                             .append("\n");
+
+              }
+
+              PropIdx = Arena.GetNode(PropIdx).NextSiblingIndx;
+
             }
+          };
 
-          }
-        }, Node.Payload
-      );
+          ProcessProps
+          (
+            ProcessProps,
+            NextInline->FirstChildIndx,
+            ""
+          );
 
-      CurrentIdx = Arena.GetNode(CurrentIdx).NextSiblingIndx;
+        }
+
+        CurrentIdx = Node.NextSiblingIndx; // point to InlineTableNode
+        // bottom-of-loop advance lands on the next KV sibling.
+
+      }
+
+      // ── Scalar value ──────────────────────────────────
+      else [[
+        /* nullAttr */
+      ]] {
+
+        if
+        (
+          !KV->Key.empty()
+        ) {
+
+          this->Buffer_.append("export ").append(CurrentPrefix);
+
+          for
+          (
+            const char C : KV->Key
+          ) this->Buffer_.push_back(
+            static_cast<char>(std::toupper(static_cast<unsigned char>(C)))
+          );
+
+          this->Buffer_.append("=").append(KV->Value).append("\n");
+
+        }
+
+      }
     }
+
+    CurrentIdx = Arena.GetNode(CurrentIdx).NextSiblingIndx;
   }
 }
+
+} // namespace Transpiler

@@ -22,6 +22,7 @@ void Lex
   std::span<const char> kC_buffer,
   const TokenHandler& handleToken
 ) {
+
   std::size_t _st_fileOffset_ {};
   std::size_t _st_fileLine_ = 1;
   std::size_t _st_fileColumn_ = 1;
@@ -30,6 +31,7 @@ void Lex
   (
     _st_fileOffset_ < kC_buffer.size()
   ) {
+
     auto _sv_fileSlice_ = std::string_view(
       kC_buffer.subspan(_st_fileOffset_).data(),
        kC_buffer.size() - _st_fileOffset_
@@ -53,6 +55,7 @@ void Lex
 
         _st_fileLine_++;
         _st_fileColumn_ = 1;
+
       }
 
       else if
@@ -73,9 +76,11 @@ void Lex
     (
       auto match = ctre::starts_with<TokenPattern>(_sv_fileSlice_)
     ) {
+
       std::string_view _sv_Mstr_ = match.to_view();
 
       Token::TokenType type = Token::TokenType::Unknown;
+
       if
       (
         match.get<"comment">()
@@ -133,19 +138,23 @@ void Lex
         (
           ch == '\n'
         ) {
+
           _st_fileLine_++;
           _st_fileColumn_ = 1;
+
         }
 
         else if
         (
           ch == '\t'
         ) _st_fileColumn_ += 4;
+
         else [[
           /* nullAttr */
         ]] _st_fileColumn_++;
 
       _st_fileOffset_ += _sv_Mstr_.length();
+
     }
 
     else [[

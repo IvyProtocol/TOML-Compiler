@@ -6,6 +6,7 @@
 
 namespace Token
 {
+
   enum class [[
     /* nullAttr */
   ]] TokenType : std::int32_t {
@@ -76,6 +77,7 @@ namespace Token
   class [[
     /* nullAttr*/
   ]] TokenData {
+
     public:
       TokenType Type;
       long : (8 * 4);
@@ -83,6 +85,7 @@ namespace Token
       std::size_t Lexer_Size_t_Line_;
       std::size_t Lexer_Size_t_Column_;
       std::size_t Lexer_Size_t_Offset_;
+
   };
 } // namespace Token
 

@@ -5,8 +5,12 @@
 #include <iostream>
 #include <ranges>
 
-auto main(int argc, char *argv[]) -> std::int32_t
-{
+auto main
+(
+  int argc,
+  char *argv[]
+) -> std::int32_t {
+
   std::span<char const *const> _arguments
   {
     std::views::counted
@@ -15,14 +19,24 @@ auto main(int argc, char *argv[]) -> std::int32_t
     )
   };
 
-  if (_arguments.size() < 2) {
+  if
+  (
+    _arguments.size() < 2
+  ) {
+
     std::cout << "Error: A file input pathway is required." << '\n';
     exit(1);
+
   }
 
   FileHandler::FileOpener file{_arguments[1]};
 
-  TOML::Parser Parse{file.view(), _arguments[1]};
+  TOML::Parser Parse
+  {
+    file.view(),
+    _arguments[1]
+  };
+
   Lexer::Lex
   (
     file.view(),
@@ -38,9 +52,15 @@ auto main(int argc, char *argv[]) -> std::int32_t
   TOML::NodeIdx Root = Parse.Parse();
 
   FileHandler::FileWriter Writer("config.sh");
-  if (!Writer.IsOpen()) {
+
+  if
+  (
+    !Writer.IsOpen()
+  ) {
+
     std::cout << "Error: Could not open output file target." << '\n';
     return 1;
+
   }
 
   Transpiler::Transpile Generate(Writer);

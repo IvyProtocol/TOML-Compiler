@@ -8,6 +8,7 @@ namespace FileHandler
   class [[
     /* nullAttr */
   ]] FileWriter {
+
     private:
       int FileDesc{-1};
 
@@ -18,19 +19,23 @@ namespace FileHandler
       [[nodiscard]] bool IsOpen() const noexcept;
 
       bool Write(std::string_view data) noexcept;
+
   };
 
   class [[
     /* nullAttr */
   ]] FileOpener {
+
     private:
       std::string_view sourceView {};
+
       [[nodiscard]] constexpr auto load
       (
         std::filesystem::path const& FilePath_
       ) noexcept(true) -> bool;
 
       constexpr auto release(void) noexcept(true) -> void;
+
     public:
       explicit FileOpener(FileOpener const&) noexcept(true) = delete;
 
