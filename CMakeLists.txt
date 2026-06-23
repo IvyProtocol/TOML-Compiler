@@ -8,9 +8,9 @@ project( lib_ullix_
     DESCRIPTION ""
 )
 
-add_executable ( a.out )
+add_executable ( CompTomlQ.out )
 
-target_compile_options( a.out PRIVATE
+target_compile_options( CompTomlQ.out PRIVATE
   -Wall
   -Wextra
   -Wpedantic
@@ -33,18 +33,17 @@ target_compile_options( a.out PRIVATE
   -std=c++2c
 )
 
-target_sources( a.out PUBLIC
+target_sources( CompTomlQ.out PUBLIC
     src/Main.cpp
     src/Lexer.cpp
     src/Parser.cpp
     src/FileHandler.cpp
     src/Transpiler.cpp
-    # src/MetaProgram.cpp
 )
-target_include_directories(a.out PRIVATE
+target_include_directories(CompTomlQ.out PRIVATE
     include/
 )
-target_compile_features (a.out PRIVATE
+target_compile_features (CompTomlQ.out PRIVATE
     cxx_std_26
 )
 
@@ -55,5 +54,5 @@ endif()
 
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
 
-target_link_options(a.out PRIVATE -lstdc++exp)
-target_link_libraries(a.out PRIVATE -lstdc++exp)
+target_link_options(CompTomlQ.out PRIVATE -lstdc++exp)
+target_link_libraries(CompTomlQ.out PRIVATE -lstdc++exp)
