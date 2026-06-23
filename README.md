@@ -13,9 +13,20 @@ Made in C++26 and is built on top of [CTRE](https://github.com/hanickadot/compil
 > transpiled directly to Bash and requires key manipulation to store the value. **It is recommended to use Standard Table instead of nested ones as they provide**
 > **as they provide clarity while the transpiler emits bash-keys.**
 
+# Installation
+Clone the git repository with `--depth 1` flag:
+
+```bash
+git clone --depth 1 https://github.com/IvyProtocol/CompTomlQ.git
+```
+
+Build the output file by enforcing CMake to use Clang++ and to write the file:
+```bash
+cmake -B build -S . -DCMAKE_CXX_COMPILER=clang++ && cmake --build build
+```
+
 ## Basic Key-Value Pairs
 The foundation of TOML is simple assignment.
-
 
 ```toml
 name = "TOML Project"
