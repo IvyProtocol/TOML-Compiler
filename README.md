@@ -6,7 +6,7 @@ Made in C++26 and is built on top of [CTRE](https://github.com/hanickadot/compil
 * The Project is built within the Lanugage Framework
 * It has been made in the standard way by following: Lexicon Analysis, Parsing, Walking Abstract Syntax Tree to the Transpiler.
 * This is a language of its own and is considered a dialect of TOML that doesn't adherent strict behavior.
-* Built on top of C++, this Transpiler provides highly faster conversion and zero abstraction granting O(1) speed. [It may vary based on the system and configuration]
+* Built on top of C++, this Transpiler provides highly faster conversion and zero abstraction granting fast speed. [It may vary based on the system and configuration]
 
 > [!NOTE]
 > Currently, it is only possible to support Table, Inline Table and Nested Arrays. However, it may become very difficult to support Arrays of Table as they can't
